@@ -65,12 +65,109 @@ class Tests(unittest.TestCase):
         realnet=ga.network
         def fake_network(gh,env,*args,**kwargs):
             return realnet(gh,env,*(str(remote) if a==url else a for a in args),**kwargs)
-        with patch.object(ga,'approved',return_value=(url,slug,'user',os.environ.copy(),'/usr/bin/false',d)),patch.object(ga,'verify_repo',return_value=d),patch.object(ga,'network',side_effect=fake_network),patch('builtins.input',return_value='PUSH'):
+        with patch.object(ga,'scan_history'),patch.object(ga,'approved',return_value=(url,slug,'user',os.environ.copy(),'/usr/bin/false',d)),patch.object(ga,'verify_repo',return_value=d),patch.object(ga,'network',side_effect=fake_network),patch('builtins.input',return_value='PUSH'):
             ga.push(self.project)
             self.assertEqual(self.git('--git-dir='+str(remote),'rev-parse','refs/heads/main'),ga.head())
             (self.project/'app.py').write_text('second'); self.git('commit','-am','next'); ga.push(self.project)
             self.assertEqual(self.git('--git-dir='+str(remote),'rev-parse','refs/heads/main'),ga.head())
     def test_registry(self):
         ga.save({str(self.project):{'account':'user','remote':'https://github.com/user/repo.git','repo_id':'42'}}); self.assertEqual(ga.load()[str(self.project)]['repo_id'],'42')
+
+    def divergent(self):
+        self.git('switch','-c','feature'); (self.project/'app.py').write_text('feature\n'); self.git('commit','-am','feature')
+        self.git('switch','main'); (self.project/'app.py').write_text('main\n'); self.git('commit','-am','main'); self.git('switch','feature')
+    def test_merge_conflict_continue(self):
+        self.divergent()
+        with patch('builtins.input',side_effect=['5','main','MERGE']),self.assertRaises(SystemExit): ga.branch_menu(self.project)
+        self.assertEqual(ga.conflict_paths(),['app.py']); self.assertIn('MERGE_HEAD',ga.ongoing())
+        (self.project/'app.py').write_text('resolved\n')
+        with patch('builtins.input',side_effect=['2','1','RESOLVE']): ga.conflict_menu(self.project)
+        with patch('builtins.input',side_effect=['3','n','CONTINUE']): ga.conflict_menu(self.project)
+        self.assertFalse(ga.ongoing()); self.assertEqual(len(self.git('rev-list','--parents','-n','1','HEAD').split()),3)
+    def test_rebase_conflict_abort(self):
+        self.divergent(); h=ga.head()
+        with patch('builtins.input',side_effect=['1','main','REWRITE']): ga.rewrite_menu(self.project)
+        self.assertIn('rebase-merge',ga.ongoing()); self.assertEqual(ga.conflict_paths(),['app.py'])
+        with patch('builtins.input',side_effect=['4','ABORT']): ga.conflict_menu(self.project)
+        self.assertEqual(ga.head(),h); self.assertFalse(ga.ongoing())
+    def test_rebase_conflict_continue(self):
+        self.divergent()
+        with patch('builtins.input',side_effect=['1','main','REWRITE']): ga.rewrite_menu(self.project)
+        (self.project/'app.py').write_text('resolved\n')
+        with patch('builtins.input',side_effect=['2','1','RESOLVE']): ga.conflict_menu(self.project)
+        with patch('builtins.input',side_effect=['3','n','CONTINUE']): ga.conflict_menu(self.project)
+        self.assertFalse(ga.ongoing()); self.assertTrue(ga.ancestor(self.git('rev-parse','main'),ga.head()))
+    def test_stash_and_pop(self):
+        (self.project/'app.py').write_text('unfinished\n'); (self.project/'new.txt').write_text('new\n')
+        with patch('builtins.input',side_effect=['1','label','STASH']): ga.stash_menu(self.project)
+        self.assertEqual((self.project/'app.py').read_text(),'print(1)\n'); self.assertTrue((self.project/'new.txt').exists())
+        (self.project/'new.txt').unlink()
+        with patch('builtins.input',side_effect=['3','1','RESTORE']): ga.stash_menu(self.project)
+        self.assertEqual((self.project/'app.py').read_text(),'unfinished\n'); self.assertFalse(ga.stash_entries()); self.assertTrue(self.git('for-each-ref','refs/gitappho/checkpoints'))
+    def test_stash_conflict_keeps_backup(self):
+        (self.project/'app.py').write_text('unfinished\n')
+        with patch('builtins.input',side_effect=['1','label','STASH']): ga.stash_menu(self.project)
+        (self.project/'app.py').write_text('other\n'); self.git('commit','-am','other')
+        with patch('builtins.input',side_effect=['3','1','RESTORE']): ga.stash_menu(self.project)
+        self.assertEqual(len(ga.stash_entries()),1)
+    def test_rewrite_main_blocked(self):
+        (self.project/'app.py').write_text('change'); self.git('commit','-am','change')
+        with patch('builtins.input',return_value='2'),self.assertRaises(SystemExit): ga.rewrite_menu(self.project)
+    def test_rewrite_tagged_commit_blocked(self):
+        self.git('switch','-c','feature'); (self.project/'app.py').write_text('change'); self.git('commit','-am','change'); self.git('tag','published')
+        with patch('builtins.input',return_value='2'),self.assertRaises(SystemExit): ga.rewrite_menu(self.project)
+    def test_soft_undo(self):
+        self.git('switch','-c','feature'); base=ga.head(); (self.project/'app.py').write_text('change'); self.git('commit','-am','change')
+        with patch('builtins.input',side_effect=['2','REWRITE']): ga.rewrite_menu(self.project)
+        self.assertEqual(ga.head(),base); self.assertEqual(self.git('diff','--cached','--name-only'),'app.py')
+    def test_restore_deleted(self):
+        (self.project/'app.py').unlink()
+        with patch('builtins.input',side_effect=['3','1','RESTORE']): ga.specific_changes(self.project)
+        self.assertTrue((self.project/'app.py').is_file()); self.assertFalse(self.git('status','--porcelain'))
+    def test_untrack_preserves_file(self):
+        (self.project/'.gitignore').write_text('app.py\n')
+        with patch('builtins.input',side_effect=['4','1','UNTRACK']): ga.specific_changes(self.project)
+        self.assertTrue((self.project/'app.py').is_file()); self.assertNotIn('app.py',self.git('ls-files'))
+    def test_clean_no_staging(self):
+        with patch('builtins.input',side_effect=AssertionError('unexpected prompt')): self.assertEqual(ga.stage_commit(),ga.head())
+    def test_scanner_missing_fails_closed(self):
+        with patch.object(ga.shutil,'which',return_value=None),self.assertRaises(SystemExit): ga.scan_history(ga.head())
+    def test_scanner_nonzero_fails_closed(self):
+        with patch.object(ga.shutil,'which',return_value='/usr/bin/false'),self.assertRaises(SystemExit): ga.scan_history(ga.head())
+
+    def test_cherry_pick_conflict(self):
+        self.divergent(); other=self.git('rev-parse','main')
+        with patch('builtins.input',side_effect=['1',other,'APPLY']): ga.specific_changes(self.project)
+        self.assertIn('CHERRY_PICK_HEAD',ga.ongoing())
+        with patch('builtins.input',side_effect=['4','ABORT']): ga.conflict_menu(self.project)
+        self.assertFalse(ga.ongoing())
+    def test_squash(self):
+        self.git('switch','-c','feature'); base=ga.head()
+        for text in ['one','two']:
+            (self.project/'app.py').write_text(text); self.git('commit','-am',text)
+        with patch('builtins.input',side_effect=['4','2','combined','REWRITE']): ga.rewrite_menu(self.project)
+        self.assertEqual(self.git('rev-list','--count',base+'..HEAD'),'1'); self.assertEqual((self.project/'app.py').read_text(),'two')
+    def test_amend_message(self):
+        self.git('switch','-c','feature'); (self.project/'app.py').write_text('change'); self.git('commit','-am','old')
+        with patch('builtins.input',side_effect=['3','new message','REWRITE']): ga.rewrite_menu(self.project)
+        self.assertEqual(self.git('log','-1','--format=%s'),'new message')
+    def test_bisect_reset(self):
+        good=ga.head()
+        for text in ['one','two','three']:
+            (self.project/'app.py').write_text(text); self.git('commit','-am',text)
+        h=ga.head()
+        with patch('builtins.input',side_effect=[good,'BISECT']): ga.bisect_menu(self.project)
+        self.assertIn('BISECT_START',ga.ongoing())
+        with patch('builtins.input',side_effect=['5','RESET']): ga.bisect_menu(self.project)
+        self.assertEqual(ga.head(),h); self.assertEqual(ga.branch(),'main'); self.assertFalse(ga.ongoing())
+    def test_conflict_markers_rejected(self):
+        self.divergent()
+        with patch('builtins.input',side_effect=['5','main','MERGE']),self.assertRaises(SystemExit): ga.branch_menu(self.project)
+        with patch('builtins.input',side_effect=['2','1']),self.assertRaises(SystemExit): ga.conflict_menu(self.project)
+        self.assertEqual(ga.conflict_paths(),['app.py'])
+    def test_checkpoint_rescue(self):
+        h=ga.head(); ref=ga.checkpoint('test')
+        with patch('builtins.input',side_effect=['y',h,'rescue/test','RESCUE']): ga.checkpoints_menu(self.project)
+        self.assertEqual(self.git('rev-parse','rescue/test'),h); self.assertEqual(ga.branch(),'main')
 
 if __name__=='__main__': unittest.main()

@@ -1,3 +1,3 @@
-# GitAppho v4 — installed wrapper
+# GitAppho v5 — installed wrapper
 unalias gitappho 2>/dev/null || true
 gitappho() { command python3 "$HOME/.config/gitappho/gitappho.py" "$@"; }
