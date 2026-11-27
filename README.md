@@ -1,10 +1,33 @@
+# GitAppho v7 — Graph-first session engine
+
+**Know what you want. Not what to type.**
+
+Run `gitappho` for five primary intentions, plus a searchable action palette. Use arrows or numbered input. Recoverable errors return to the home screen; confirmation verbs accept either case, and invalid confirmations reprompt. Type CANCEL to cancel. Select 0/Esc at home to exit. The journal is local and never automatically replays operations. A project lock prevents overlapping v7 interactive sessions; it does not prevent external Git writes. Legacy direct flags are still one-shot. macOS/Linux only for persistent sessions; Windows untested.
+
+```sh
+gitappho --version
+gitappho --graph-check
+gitappho
+gitappho find stash pop
+gitappho find branch delete
+gitappho find remote merge
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for graph design, state constraints, feature coverage, implemented versus planned structures, and limits. 60 local regression tests passed during development; GitHub and scanner responses remain simulated in those tests. No live GitHub operations were performed.
+
+## Upgrade from v6
+
+Run `python3 ~/Downloads/install_gitappho_v7.py`. The installer refuses to replace unexpected core source contents; if your source differs from the supplied v6 or v7, review differences first. Other replaced files are backed up under `~/.config/gitappho/`. No remote operations, staging or publication are performed. Restart terminals, then use `gitappho --version`. Requires Python 3.9+, Git 2.38+, and GitHub CLI / Gitleaks for applicable remote workflows. Existing registry and keyboard shortcuts remain unchanged.
+
+## Inherited v6 workflows and safety details
+
 # GitAppho v6 — Git without the complexity
 
 One terminal command opens a contextual menu for Git and GitHub. Use intent, not memorized Git commands.
 
-## Upgrade on macOS
+## Previous v6 installation notes
 
-Requires Python 3.9+, Git 2.38+ (for rebase safeguards), GitHub CLI for remote operations and Gitleaks 8.x with the modern `git` subcommand for outgoing commit scans. Install dependencies with `brew install gh gitleaks` if missing. Run `python3 ~/Downloads/install_gitappho_v6.py` on the existing `~/GitAppho` project; then `source ~/.zshrc` and `gitappho --doctor`. Restart existing IDE terminals. The installer preserves the project registry and creates backups under `~/.config/gitappho/`. It writes source and installed application files, but does not run Git, publish anything, or modify GitHub credentials. Existing VS Code user keybindings are not changed. Use the existing Control+Option+Shift+G keybinding only at an idle integrated terminal prompt in the exact project root. Disable conflicting Apple Shortcuts keystroke injection.
+Requires Python 3.9+, Git 2.38+ (for rebase safeguards), GitHub CLI for remote operations and Gitleaks 8.x with the modern `git` subcommand for outgoing commit scans. Install dependencies with `brew install gh gitleaks` if missing. Use the v7 installer above on the existing `~/GitAppho` project; then `source ~/.zshrc` and `gitappho --doctor`. Restart existing IDE terminals. The installer preserves the project registry and creates backups under `~/.config/gitappho/`. It writes source and installed application files, but does not run Git, publish anything, or modify GitHub credentials. Existing VS Code user keybindings are not changed. Use the existing Control+Option+Shift+G keybinding only at an idle integrated terminal prompt in the exact project root. Disable conflicting Apple Shortcuts keystroke injection.
 
 ## Everyday operations
 
@@ -28,7 +51,7 @@ Run `gitappho` to see the five-action menu. On POSIX interactive terminals use U
 - Combine: local merge, remote update, pull requests, guarded rebase, cherry-pick or branch comparison.
 - Fix: automatically route interrupted operations to recovery, or select undo, restore, rescue, bisect, privacy or connection tools. All original v5 advanced commands remain via `--advanced` or Fix > All advanced tools.
 
-Remote freshness is not inferred from local tracking refs. Authentication and publishing use existing v5 safeguards. Actions finish after one workflow rather than returning to the main menu. Exact project root required.
+Remote freshness is not inferred from local tracking refs. Authentication and publishing use existing v5 safeguards. In v7, normal interactive sessions return to the main menu after a workflow. Exact project root required.
 
 ## Advanced tools (`gitappho --advanced`)
 

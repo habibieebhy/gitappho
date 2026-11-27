@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitAppho 6.0: intent-driven, guarded Git workflows."""
+"""GitAppho 7.0: intent-driven, guarded Git workflows."""
 import argparse
 import json
 import os
@@ -79,8 +79,14 @@ def identity(account=None):
 
 
 def confirm(word, message):
-    if input(f'{message}\nType {word} to continue: ').strip() != word:
-        stop('Cancelled. No further actions performed.')
+    print(message)
+    while True:
+        answer=input(f'Type {word} to continue, or CANCEL: ').strip()
+        if answer.casefold() in ('cancel','no','n','back','0',''): stop('Cancelled. No further actions performed.')
+        # The confirmation verb is case-insensitive; branch names and other operands stay exact.
+        a=answer.split(maxsplit=1); w=word.split(maxsplit=1)
+        if a and a[0].casefold()==w[0].casefold() and a[1:]==w[1:]: return
+        print('Confirmation did not match. Try again or type CANCEL.')
 
 
 def boundary():
@@ -930,10 +936,11 @@ def menu(title, choices, *, recommended=None):
         finally: termios.tcsetattr(fd,termios.TCSADRAIN,old)
     for i,(key,label) in enumerate(choices,1): print(f'{i}. {label}'+(' [recommended]' if key==recommended else ''))
     print('0. Back / exit')
-    answer=input('Choose: ').strip()
-    if answer in ('','0'): return None
-    if answer.isdigit() and 1<=int(answer)<=len(choices): return choices[int(answer)-1][0]
-    stop('Choose a listed option.')
+    while True:
+        answer=input('Choose: ').strip()
+        if answer.casefold() in ('','0','back','cancel'): return None
+        if answer.isdigit() and 1<=int(answer)<=len(choices): return choices[int(answer)-1][0]
+        print('Choose a listed option, or 0 to go back.')
 
 
 def dirty():
@@ -941,7 +948,7 @@ def dirty():
 
 
 def show_home(root,exists):
-    print('\nGITAPPHO  /  6.0.0\nKnow what you want. Not what to type.\n'+'-'*48)
+    print('\nGITAPPHO  /  7.0.0\nKnow what you want. Not what to type.\n'+'-'*48)
     print('Project:',repr(root.name))
     if not exists: print('Not yet a Git project. No changes made.'); return
     b=out('branch','--show-current') or '(detached)'
@@ -1159,15 +1166,330 @@ def dispatch_intent(root,exists,action=None,name=None):
     if action: print('\nSession finished. Review the result above; run gitappho again for another action.')
 
 
+# V7: state graph, indexed action registry and resilient interactive session.
+from collections import deque, defaultdict
+from dataclasses import dataclass
+import hashlib
+import difflib
+
+# The session controller uses these edges, not an illustrative-only graph.
+GRAPH = {
+ 'inspect': {'ready','recovery','attention','exit'},
+ 'ready': {'execute','inspect','exit'},
+ 'recovery': {'execute','inspect','exit'},
+ 'attention': {'inspect','exit'},
+ 'execute': {'verify','attention','paused'},
+ 'verify': {'inspect','attention','paused'},
+ 'paused': {'inspect','exit'},
+ 'exit': set(),
+}
+
+def reachable(start, graph=GRAPH):
+    seen={start}; todo=deque([start])
+    while todo:
+        for nxt in graph[todo.popleft()]:
+            if nxt not in seen: seen.add(nxt); todo.append(nxt)
+    return seen
+
+@dataclass(frozen=True)
+class Action:
+    key: str
+    group: str
+    label: str
+    words: str
+    handler: object
+    needs_repo: bool=True
+    needs_remote: bool=False
+    during_operation: bool=False
+
+
+def init_local(root):
+    if boundary()!=(root,False): stop('Only initialise an independent, new project.')
+    confirm('INIT','Create a local Git repository here? No files staged, no upload.')
+    if boundary()!=(root,False): stop('Project changed.')
+    git('init','-b','main',capture=False)
+
+
+def scan_current(root):
+    h=head()
+    if not h: stop('Save an initial commit first.')
+    scan_history(h)
+
+
+def register_current(root):
+    ri=remote_info()
+    if not ri: stop('Connect to GitHub first.')
+    register(root,*ri,input('GitHub username (Enter = active): ').strip() or None)
+
+
+def remote_call(fn):
+    def invoke(root):
+        ensure_registered(root)
+        return fn(root)
+    return invoke
+
+
+def private_call(choice):
+    def invoke(root):
+        if remote_info(): ensure_registered(root)
+        return rewrite_menu(root,choice=choice)
+    return invoke
+
+# One key per discoverable action. Existing guards still run in handlers.
+ACTIONS = {a.key:a for a in [
+ Action('save','Save','Save my work','commit add stage upload publish',lambda r:intent_save(r,(r/'.git').is_dir()),False),
+ Action('local-save','Save','Save a local commit','commit add stage',lambda r:stage_commit()),
+ Action('push','Save','Upload existing commits','push publish branch',remote_call(push),True,True),
+ Action('init','Save','Start a local repository','init initialize new repo',init_local,False),
+ Action('publish','Save','Create and publish a new GitHub repository','new remote publish',lambda r:publish(r,(r/'.git').is_dir()),False),
+ Action('connect','Save','Connect to or safely clone an existing repository','remote clone attach origin',lambda r:connect(r,(r/'.git').is_dir()),False),
+ Action('update','Update','Get the latest work','pull fetch sync fast forward divergent',intent_update,True,True),
+ Action('compare-remote','Update','Compare local and GitHub commits','fetch ahead behind divergence',lambda r:compare_snapshot(remote_snapshot(r)),True,True),
+ Action('new','New','Work on something new','branch create switch carry edits',intent_new),
+ Action('branch-create','New','Create a branch from a selected base','branch switch checkout',lambda r:branch_menu(r,'1')),
+ Action('branch-switch','New','Switch to an existing local branch','checkout branch',lambda r:branch_menu(r,'2')),
+ Action('branch-download','New','Download a GitHub branch','fetch checkout branch remote',remote_call(lambda r:branch_menu(r,'3')),True,True),
+ Action('branch-delete','New','Delete a merged local branch','delete cleanup branch',lambda r:branch_menu(r,'6')),
+ Action('stash','New','Set unfinished tracked work aside','stash save temporary',lambda r:stash_menu(r,'1')),
+ Action('restore-stash','New','Restore saved work and keep backup','stash apply restore',lambda r:stash_menu(r,'2')),
+ Action('stash-pop','New','Restore saved work and remove stash after success','stash pop',lambda r:stash_menu(r,'3')),
+ Action('stash-list','New','List saved unfinished work','stash list',lambda r:stash_menu(r,'4')),
+ Action('combine','Combine','Combine my work','merge rebase pull request cherry pick',intent_combine),
+ Action('merge','Combine','Merge a local branch','git merge combine',lambda r:branch_menu(r,'5')),
+ Action('merge-remote','Combine','Merge a selected GitHub branch','remote merge combine',remote_call(merge_remote),True,True),
+ Action('compare','Combine','Compare two local branches','diff log branch history',lambda r:branch_menu(r,'4')),
+ Action('rebase','Combine','Replay private commits onto another branch','rebase rewrite',private_call('1')),
+ Action('cherry-pick','Combine','Bring over a specific change','cherry pick commit apply',lambda r:specific_changes(r,'1')),
+ Action('pr','Combine','Open, list or merge pull requests','pull request github collaboration',remote_call(pr_menu),True,True),
+ Action('fix','Fix','Fix a problem','recover error conflict recovery',intent_fix,True,False,True),
+ Action('conflict','Fix','Review or resolve interrupted operation','merge rebase cherry pick revert conflict abort continue',conflict_menu,True,False,True),
+ Action('revert','Fix','Reverse a commit without rewriting history','revert undo',lambda r:specific_changes(r,'2')),
+ Action('undo-private','Fix','Undo last private commit but keep code','soft reset undo commit',private_call('2')),
+ Action('amend','Fix','Correct last private commit message','amend rewrite commit',private_call('3')),
+ Action('squash','Fix','Combine recent private commits','squash rebase rewrite',private_call('4')),
+ Action('restore-file','Fix','Recover an unstaged deleted file','restore checkout file',lambda r:specific_changes(r,'3')),
+ Action('untrack','Fix','Stop tracking an ignored file without deleting it','rm cached gitignore',lambda r:specific_changes(r,'4')),
+ Action('blame','Fix','Find who changed a file','blame inspect history',lambda r:specific_changes(r,'5')),
+ Action('rescue','Fix','Find lost commits and recovery checkpoints','reflog rescue backup',checkpoints_menu),
+ Action('bisect','Fix','Find when a bug started','bisect binary search regression',bisect_menu,True,False,True),
+ Action('scan','Fix','Scan current history for secrets','gitleaks privacy scan credentials',scan_current),
+ Action('register','Fix','Register or change GitHub account','account connection identity',register_current,True,True),
+ Action('verify-account','Fix','Verify GitHub account and repository','authentication verify origin',remote_call(lambda r:(approved(r),print('GitHub connection verified.'))),True,True),
+ Action('login','Fix','Sign in to GitHub','auth login account',lambda r:login_action(),False),
+ Action('github','Fix','GitHub issues, CI checks and draft releases','issues workflow runs release tag',remote_call(github_extras),True,True),
+ Action('advanced','Fix','Open all legacy advanced tools','advanced tools menu',advanced_menu),
+ Action('status','Fix','Inspect actual local Git state','status branch working tree',lambda r:status(r,(r/'.git').is_dir()),False,False,True),
+]}
+GROUPS=('Save','Update','New','Combine','Fix')
+INDEX=defaultdict(set)
+for a in ACTIONS.values():
+    for term in re.findall(r'[a-z0-9]+',f'{a.key} {a.label} {a.words}'.lower()): INDEX[term].add(a.key)
+
+
+def search_actions(query):
+    terms=re.findall(r'[a-z0-9]+',query.casefold())
+    if not terms: return list(ACTIONS.values())
+    matches=set(ACTIONS)
+    for term in terms:
+        options=set()
+        for word,keys in INDEX.items():
+            if word.startswith(term): options.update(keys)
+        matches &= options
+    if matches:
+        return sorted((ACTIONS[k] for k in matches),key=lambda a:(a.key!=query.casefold(),a.label.casefold()))
+    # Fuzzy results are suggestions only; never execute them automatically.
+    return [ACTIONS[k] for k in difflib.get_close_matches(query.casefold(),list(ACTIONS),n=5,cutoff=.45)]
+
+
+def strongly_connected(graph=GRAPH):
+    # Small graph: use forward/reverse reachability to partition SCCs.
+    remaining=set(graph); components=[]
+    reverse={v:set() for v in graph}
+    for u,targets in graph.items():
+        for v in targets: reverse[v].add(u)
+    while remaining:
+        v=min(remaining)
+        component=reachable(v,graph)&reachable(v,reverse)
+        components.append(component); remaining-=component
+    return components
+
+
+def graph_check():
+    all_nodes=reachable('inspect')
+    stranded=sorted(k for k in GRAPH if 'exit' not in reachable(k))
+    orphaned=sorted(k for k,a in ACTIONS.items() if a.group not in GROUPS or not callable(a.handler))
+    assert all_nodes==set(GRAPH) and not stranded and not orphaned
+    print(f'{len(all_nodes)}/{len(GRAPH)} session states reachable; {sum(map(len,GRAPH.values()))} directed transitions.')
+    print(f'{len(ACTIONS)} registered action routes across {len(GROUPS)} intentions; each group is searchable.')
+    print(f'{len(strongly_connected())} strongly connected components; every state has a path to explicit exit.')
+    print('Structural checks only: not proof of guard feasibility or all possible Git behaviour.')
+
+
+def palette(query=None):
+    if query is None:
+        query=input('Search actions (e.g. stash pop, rebase, branch delete; Enter = browse): ').strip()
+    results=search_actions(query)
+    if not results: print('No matching action. Try a shorter keyword.'); return None
+    # Pagination is available in both native and numbered navigation.
+    start=0
+    while True:
+        chunk=results[start:start+7]
+        options=[(a.key,f'{a.label}  [{a.group}]') for a in chunk]
+        if start+7<len(results): options.append(('next-page','More results'))
+        if start: options.append(('prev-page','Previous results'))
+        c=menu(f'Action palette · {start+1}–{start+len(chunk)} of {len(results)}',options)
+        if c=='next-page': start+=7
+        elif c=='prev-page': start-=7
+        else: return c
+
+
+def safe_config_dir():
+    for p in (CONFIG.parent,CONFIG,CONFIG/'sessions'):
+        if p.is_symlink() or (p.exists() and not p.is_dir()): stop('Unsafe local session directory.')
+        p.mkdir(mode=0o700,exist_ok=True)
+    return CONFIG/'sessions'
+
+
+class Session:
+    """Advisory durable journal. No commands/arguments, secrets, or source contents saved."""
+    def __init__(self,root):
+        self.root=root; self.state='inspect'; self.events=deque(maxlen=40); self.action=None
+        folder=safe_config_dir(); key=hashlib.sha256(os.fsencode(root)).hexdigest()
+        self.path=folder/(key+'.json'); self.lockpath=folder/(key+'.lock'); self.lock=None
+        for p in (self.path,self.lockpath):
+            if p.is_symlink() or (p.exists() and not p.is_file()): stop('Unsafe session file.')
+        self.previous=None
+    def __enter__(self):
+        if os.name!='posix': stop('Persistent session locking currently requires macOS or Linux.')
+        import fcntl
+        fd=os.open(self.lockpath,os.O_RDWR|os.O_CREAT|getattr(os,'O_NOFOLLOW',0),0o600)
+        try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd); stop('Another GitAppho session holds this project. Close it before starting a second.')
+        self.lock=fd
+        try:
+            if self.path.exists():
+                if self.path.stat().st_size>65536: stop('Session journal too large. Review the local journal manually.')
+                self.previous=json.loads(self.path.read_text())
+                if not isinstance(self.previous,dict): stop('Invalid session journal.')
+            return self
+        except BaseException:
+            os.close(fd); self.lock=None; raise
+    def __exit__(self,*args):
+        if self.lock is not None: os.close(self.lock); self.lock=None
+    def transition(self,state,event):
+        if state not in GRAPH[self.state]: raise RuntimeError(f'Invalid state edge {self.state} → {state}')
+        self.state=state; self.events.append({'state':state,'event':event,'action':self.action,'time':datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        payload={'state':state,'action':self.action,'events':list(self.events)}
+        fd,tmp=tempfile.mkstemp(prefix='.session-',dir=self.path.parent)
+        try:
+            with os.fdopen(fd,'w') as f: json.dump(payload,f); f.flush(); os.fsync(f.fileno())
+            os.replace(tmp,self.path)
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+
+
+def session_header(root,exists):
+    width=min(78,max(30,shutil.get_terminal_size((80,24)).columns-2))
+    color=sys.stdout.isatty() and not os.environ.get('NO_COLOR') and os.environ.get('TERM') not in (None,'','dumb')
+    def accent(s): return '\x1b[1;36m'+s+'\x1b[0m' if color else s
+    print('\n'+accent('╭'+'─'*width+'╮'))
+    print(accent('  gitappho.  /  7.0.0'))
+    print('  Know what you want. Not what to type.')
+    print(accent('╰'+'─'*width+'╯'))
+    print('  Project:',repr(root.name))
+    if not exists: print('  Not a Git repository yet.'); return []
+    states=ongoing(); b=out('branch','--show-current') or '(detached)'
+    rows=git('status','--porcelain','-z','--untracked-files=normal').stdout.split('\0')
+    changed=sum(bool(x) for x in rows) # rename records can be two entries; do not claim exact file count
+    print('  Branch:',repr(b),' | ', 'Unfinished changes' if changed else 'Clean working tree')
+    ri=remote_info(); row=load().get(str(root),{})
+    print('  GitHub:',ri[1] if ri else 'Local only',' | ', 'Registered (not yet verified)' if ri and row.get('remote')==ri[0] else 'Not registered')
+    print('  Saved work:',len(stash_entries()),' | Remote freshness: unknown until checked')
+    if states: print('  NEEDS ATTENTION:',', '.join(states))
+    return states
+
+
+def run_action(root,exists,states,key,name=None):
+    a=ACTIONS.get(key)
+    if not a: stop('Unknown action. Use the action palette.')
+    if a.needs_repo and not exists: stop('Start or connect a Git repository first.')
+    if states and not a.during_operation: stop('Finish or pause the interrupted operation first.')
+    if a.needs_remote and not remote_info(): stop('Connect to GitHub first.')
+    if exists: advanced_guard(root,allow_operation=a.during_operation)
+    if key=='init' and exists: stop('Already a Git repository. Nothing initialised.')
+    if key=='new' and name: return intent_new(root,name)
+    if key=='conflict' and not states: print('No interrupted operation.'); return
+    if key=='bisect' and states and 'BISECT_START' not in states: stop('Finish the other operation first.')
+    return a.handler(root)
+
+
+def persistent_session(root,initial=None,name=None):
+    with Session(root) as s:
+        if s.previous and s.previous.get('state') in ('execute','verify','attention','paused'):
+            print('Previous session may have stopped before verification. Nothing will be replayed.')
+            print('Inspect local status and, for a network action, compare the actual GitHub state before repeating it.')
+            initial=None; name=None
+        while True:
+            # Re-inspect actual Git state every time; do not trust the journal as Git truth.
+            try:
+                current,exists=boundary()
+                if current!=root: stop('Project changed; launch again at the intended root.')
+                if exists: config_guard()
+                states=session_header(root,exists)
+            except (SystemExit,OSError,ValueError,KeyError,TypeError,AttributeError) as e:
+                if isinstance(e,SystemExit): print(str(e))
+                print('Project cannot be inspected safely. No further actions will run.')
+                s.transition('exit','inspection-blocked'); return
+            s.transition('recovery' if states else 'ready','inspected')
+            try:
+                if initial is not None: key=initial; initial=None
+                else:
+                    options=([('fix','Resolve or review the interrupted operation'),('status','Inspect local status')] if states else
+                             [('save','Save my work'),('update','Get the latest work'),('new','Work on something new'),('combine','Combine my work'),('fix','Fix a problem')])
+                    options.append(('palette','Search all actions / advanced tools'))
+                    key=menu('What do you want to do?',options,recommended='fix' if states else 'save' if not exists or dirty() else 'new')
+                if key is None: s.transition('exit','explicit-exit'); return
+                if key=='palette': key=palette(name); name=None
+                if key is None: name=None; s.transition('inspect','back'); continue
+            except (KeyboardInterrupt,EOFError): s.transition('exit','terminal-exit'); return
+            s.action=key
+            s.transition('execute','action-started')
+            try:
+                run_action(root,exists,states,key,name); name=None
+                s.transition('verify','handler-returned')
+                # Local observation only. Legacy handlers can return after a cancellation or failed command.
+                if boundary()[0]!=root: stop('Project changed during action.')
+                if (root/'.git').is_dir():
+                    config_guard(); git('status','--short',capture=False); ongoing()
+                print('Action returned. Review the result above. Session remains open.')
+                s.transition('inspect','local-state-observed')
+            except SystemExit as e:
+                print('\n'+str(e)); print('No automatic retry. Review current state; choose another action or try again.')
+                s.transition('attention','action-stopped'); s.transition('inspect','reinspect')
+            except KeyboardInterrupt:
+                print('\nInterrupted. Check actual state before repeating the operation.')
+                s.transition('paused','interrupt'); s.transition('inspect','reinspect')
+            except EOFError:
+                print('\nInput closed. Next session will inspect the repository; nothing will replay.')
+                s.transition('paused','input-closed'); return
+            except (OSError,ValueError,KeyError,TypeError,AttributeError):
+                print('Operation could not be verified. Inspect actual state before trying again.')
+                s.transition('attention','unknown-outcome'); s.transition('inspect','reinspect')
+            name=None
+
+
 def main():
-    p=argparse.ArgumentParser(description='GitAppho v6 — five intentions, guarded Git workflows')
+    p=argparse.ArgumentParser(description='GitAppho v7 — five intentions, guarded Git workflows')
     g=p.add_mutually_exclusive_group()
-    p.add_argument('--version',action='version',version='GitAppho 6.0.0')
+    p.add_argument('--version',action='version',version='GitAppho 7.0.0')
+    p.add_argument('--graph-check',action='store_true')
     for x in ('login','accounts','projects','status','doctor','register','publish','connect','advanced'): g.add_argument('--'+x,action='store_true')
     g.add_argument('--account',metavar='USERNAME')
     p.add_argument('intent',nargs='*',help='save | update | new [name] | combine | fix')
     a=p.parse_args()
     if a.intent and (a.account or any(getattr(a,x) for x in ('login','accounts','projects','status','doctor','register','publish','connect','advanced'))): p.error('Use either an intention or a legacy option, not both.')
+    if a.graph_check: graph_check(); return
     if a.login: login_action(); return
     if a.accounts: run([gh_path(),'auth','status','--hostname','github.com'],env=gh_env(),capture=False,check=False); return
     if a.projects:
@@ -1178,18 +1500,17 @@ def main():
     root,exists=boundary()
     if exists: config_guard()
     if a.status: status(root,exists); return
-    if a.advanced:
-        if not exists: stop('Open a Git repository first.')
-        if ongoing(): conflict_menu(root)
-        else: advanced_menu(root)
-        return
+    if a.advanced: return persistent_session(root,'palette')
     if a.publish: publish(root,exists); return
     if a.connect: connect(root,exists); return
     if a.register or a.account:
         if not exists or not remote_info(): stop('No connected independent repo. Use --publish or --connect.')
         register(root,*remote_info(),a.account); return
-    action,name=parse_intent(a.intent)
-    dispatch_intent(root,exists,action,name)
+    if a.intent and a.intent[0].casefold() in ('find','search'):
+        action,name='palette',' '.join(a.intent[1:]) or None
+    elif len(a.intent)==1 and a.intent[0] in ACTIONS: action,name=a.intent[0],None
+    else: action,name=parse_intent(a.intent)
+    persistent_session(root,action,name)
 
 def cli():
     try: main()

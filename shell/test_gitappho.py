@@ -244,4 +244,55 @@ class Tests(unittest.TestCase):
         with patch.object(ga,'remote_snapshot',return_value=snap),patch.object(ga,'snapshot_check',side_effect=SystemExit('remote changed')),patch('builtins.input',return_value='UPDATE'),self.assertRaises(SystemExit): ga.intent_update(self.project)
         self.assertEqual(ga.head(),snap[-2])
 
+    def test_v7_confirmation_case_and_retry(self):
+        with patch('builtins.input',side_effect=['mistyped','commit']): ga.confirm('COMMIT','Confirm commit')
+        with patch('builtins.input',side_effect=['delete Feature','delete feature']): ga.confirm('DELETE feature','Confirm branch')
+        with patch('builtins.input',return_value='cancel'), self.assertRaises(SystemExit): ga.confirm('PUSH','Confirm upload')
+    def test_v7_menu_invalid_retry(self):
+        with patch('builtins.input',side_effect=['invalid','99','2']): self.assertEqual(ga.menu('Test',[('a','A'),('b','B')]),'b')
+    def test_v7_graph_reachability(self):
+        self.assertEqual(ga.reachable('inspect'),set(ga.GRAPH))
+        self.assertTrue(all('exit' in ga.reachable(x) for x in ga.GRAPH))
+        ga.graph_check()
+    def test_v7_registry_search(self):
+        for key,action in ga.ACTIONS.items(): self.assertIn(action,ga.search_actions(key))
+        self.assertIn('stash-pop',[a.key for a in ga.search_actions('stash pop')])
+        self.assertIn('branch-delete',[a.key for a in ga.search_actions('branch delete')])
+        self.assertIn('merge-remote',[a.key for a in ga.search_actions('remote merge')])
+    def test_v7_session_cancel_and_save(self):
+        (self.project/'app.py').write_text('print(2)\n'); h=ga.head()
+        with patch('builtins.input',side_effect=['cancel','1','1','STAGE','n','new work','commit','0']): ga.persistent_session(self.project,'local-save')
+        self.assertNotEqual(ga.head(),h); self.assertEqual(self.git('log','-1','--format=%s'),'new work')
+    def test_v7_session_error_stays_open(self):
+        h=ga.head()
+        with patch('builtins.input',side_effect=['0']): ga.persistent_session(self.project,'push')
+        self.assertEqual(ga.head(),h)
+        with ga.Session(self.project) as s:
+            self.assertEqual(s.previous['state'],'exit'); self.assertIn('action-stopped',[x['event'] for x in s.previous['events']])
+    def test_v7_interruption_journal_resume(self):
+        with patch.object(ga,'run_action',side_effect=EOFError): ga.persistent_session(self.project,'local-save')
+        with ga.Session(self.project) as s: self.assertEqual(s.previous['state'],'paused')
+        with patch.object(ga,'run_action') as run,patch('builtins.input',return_value='0'): ga.persistent_session(self.project,'push')
+        run.assert_not_called()
+    def test_v7_conflict_guard(self):
+        with patch.object(ga,'advanced_guard') as guard:
+            with self.assertRaises(SystemExit): ga.run_action(self.project,True,['MERGE_HEAD'],'push')
+            guard.assert_not_called()
+    def test_v7_session_lock(self):
+        with ga.Session(self.project):
+            with self.assertRaises(SystemExit):
+                with ga.Session(self.project): pass
+    def test_v7_local_initialization(self):
+        p=self.home/'new-project'; p.mkdir(); (p/'file.txt').write_text('local'); os.chdir(p)
+        with patch('builtins.input',side_effect=['init','0']): ga.persistent_session(p,'init')
+        self.assertTrue((p/'.git').is_dir()); self.assertIsNone(ga.head()); self.assertEqual(self.git('ls-files'),''); self.assertEqual(self.git('remote'),'')
+    def test_v7_branch_delete_route(self):
+        self.git('branch','old-branch')
+        with patch('builtins.input',side_effect=['old-branch','delete old-branch']): ga.run_action(self.project,True,[],'branch-delete')
+        self.assertNotIn('old-branch',ga.local_branches())
+    def test_v7_block_home(self):
+        os.chdir(self.home)
+        with self.assertRaises(SystemExit): ga.boundary()
+        self.assertFalse((self.home/'.git').exists())
+
 if __name__=='__main__': unittest.main()
