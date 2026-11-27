@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitAppho 7.0: intent-driven, guarded Git workflows."""
+"""GitAppho 7.0.1: intent-driven, guarded Git workflows."""
 import argparse
 import json
 import os
@@ -22,11 +22,49 @@ def stop(message):
 
 
 def run(args, *, env=None, capture=True, check=True):
-    p = subprocess.run(args, env=env, text=True, stdout=subprocess.PIPE if capture else None,
-                       stderr=subprocess.PIPE if capture else None)
+    # Bound noninteractive network/scanner operations, not interactive login or editors.
+    exe=Path(args[0]).name
+    label=None; limit=None
+    if exe=='gh' and len(args)>1:
+        if args[1]=='api': label,limit='Verify GitHub information',40
+        elif args[1:3]==['auth','token']: label,limit='Check saved GitHub login',30
+        elif args[1] in ('repo','pr','issue','run','release'): label,limit='Contact GitHub',120
+    elif exe=='git':
+        # Skip the global -c configuration pairs before identifying the subcommand.
+        i=1
+        while i<len(args) and args[i]=='-c': i+=2
+        if i<len(args) and args[i] in ('ls-remote','fetch','push','clone'):
+            op=args[i]; label={'ls-remote':'Check remote branches','fetch':'Fetch reviewed GitHub history','push':'Upload reviewed commits','clone':'Download repository'}[op]
+            limit=60 if op=='ls-remote' else 300
+    elif exe=='gitleaks': label,limit='Scan outgoing history for secrets',180
+    if label is None:
+        p=subprocess.run(args,env=env,text=True,stdout=subprocess.PIPE if capture else None,stderr=subprocess.PIPE if capture else None)
+    else:
+        import time, signal
+        print(f'  → {label}…',flush=True)
+        started=time.monotonic()
+        with subprocess.Popen(args,env=env,text=True,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE if capture else None,stderr=subprocess.PIPE if capture else None,start_new_session=(os.name=='posix')) as child:
+            def terminate():
+                try:
+                    if os.name=='posix': os.killpg(child.pid,signal.SIGKILL)
+                    else: child.kill()
+                except ProcessLookupError: pass
+                child.communicate()
+            try:
+                while True:
+                    remaining=limit-(time.monotonic()-started)
+                    if remaining<=0:
+                        terminate(); stop(f'{label} timed out. Outcome may be uncertain; inspect local and remote state before retrying.')
+                    try:
+                        stdout,stderr=child.communicate(timeout=min(5,remaining)); break
+                    except subprocess.TimeoutExpired:
+                        print(f'    Still working ({int(time.monotonic()-started)}s)… Ctrl+C to interrupt.',flush=True)
+            except KeyboardInterrupt:
+                terminate(); raise
+            p=subprocess.CompletedProcess(args,child.returncode,stdout,stderr)
+        print(f'  {"✓" if p.returncode==0 else "!"} {label}: {"done" if p.returncode==0 else "failed"}',flush=True)
     if check and p.returncode:
-        # Do not echo arbitrary subprocess output: it can contain credentials.
-        stop(f'{Path(args[0]).name} command failed (exit {p.returncode}). Review authentication or repository state.')
+        stop(f'{exe} command failed (exit {p.returncode}). Review authentication or repository state.')
     return p
 
 
@@ -911,26 +949,33 @@ def menu(title, choices, *, recommended=None):
         index=next((i for i,(k,_) in enumerate(choices) if k==recommended),0)
         rows=choices+[(None,'Back / exit')]
         width=max(20,shutil.get_terminal_size((80,24)).columns-2)
+        typed=''
         def draw():
             for i,(_,label) in enumerate(rows):
                 line=('> ' if i==index else '  ')+f'{i+1 if i<len(choices) else 0}. '+label
                 print('\x1b[2K'+('\x1b[1;32m' if i==index and not os.environ.get('NO_COLOR') else '')+line[:width]+'\x1b[0m')
-            print('\x1b[2KUp/Down  Enter  0/Esc: back',flush=True)
+            print('\x1b[2K↑/↓ select · Enter confirm · Esc or 0 + Enter: back'+('  ['+typed+']' if typed else ''),flush=True)
         try:
             tty.setcbreak(fd); draw()
             while True:
                 key=os.read(fd,1)
-                if not key or key in (b'0',b'\x04'): return None
-                if key in (b'\n',b'\r'): return rows[index][0]
-                if key==b'\x1b':
+                if not key or key==b'\x04': return None
+                if key in (b'\n',b'\r'):
+                    answer=typed.strip().casefold()
+                    if answer in ('0','back','cancel'): return None
+                    if not answer: return rows[index][0]
+                    if answer.isdigit() and 1<=int(answer)<=len(choices): return choices[int(answer)-1][0]
+                    typed=''
+                elif key==b'\x1b':
                     seq=b''
                     while len(seq)<2 and select.select([fd],[],[],0.08)[0]: seq+=os.read(fd,1)
-                    if seq in (b'[A',b'OA'): index=(index-1)%len(rows)
-                    elif seq in (b'[B',b'OB'): index=(index+1)%len(rows)
+                    if seq in (b'[A',b'OA'): index=(index-1)%len(rows); typed=''
+                    elif seq in (b'[B',b'OB'): index=(index+1)%len(rows); typed=''
                     elif not seq: return None
                     else: continue
-                elif key.isdigit() and 1<=int(key)<=len(choices): return choices[int(key)-1][0]
-                elif key in (b'j',b'k'): index=(index+(1 if key==b'j' else -1))%len(rows)
+                elif key in (b'\x7f',b'\x08'): typed=typed[:-1]
+                elif key.isascii() and (key.isalnum() or key==b' '):
+                    if len(typed)<16: typed+=key.decode('ascii')
                 else: continue
                 print(f'\x1b[{len(rows)+1}A',end=''); draw()
         finally: termios.tcsetattr(fd,termios.TCSADRAIN,old)
@@ -948,7 +993,7 @@ def dirty():
 
 
 def show_home(root,exists):
-    print('\nGITAPPHO  /  7.0.0\nKnow what you want. Not what to type.\n'+'-'*48)
+    print('\nGITAPPHO  /  7.0.1\nKnow what you want. Not what to type.\n'+'-'*48)
     print('Project:',repr(root.name))
     if not exists: print('Not yet a Git project. No changes made.'); return
     b=out('branch','--show-current') or '(detached)'
@@ -985,7 +1030,9 @@ def intent_save(root,exists):
     c=menu('Save my work',[('publish','Save and upload to GitHub'),('local','Save on this computer only')],recommended='publish')
     if c=='local': stage_commit(); return
     if c=='publish':
+        print('Checking GitHub connection before staging any files…',flush=True)
         ensure_registered(root); approved(root)
+        print('GitHub verified. Reviewing local changes…',flush=True)
         stage_commit(); push(root)
 
 
@@ -1394,7 +1441,7 @@ def session_header(root,exists):
     color=sys.stdout.isatty() and not os.environ.get('NO_COLOR') and os.environ.get('TERM') not in (None,'','dumb')
     def accent(s): return '\x1b[1;36m'+s+'\x1b[0m' if color else s
     print('\n'+accent('╭'+'─'*width+'╮'))
-    print(accent('  gitappho.  /  7.0.0'))
+    print(accent('  gitappho.  /  7.0.1'))
     print('  Know what you want. Not what to type.')
     print(accent('╰'+'─'*width+'╯'))
     print('  Project:',repr(root.name))
@@ -1482,7 +1529,7 @@ def persistent_session(root,initial=None,name=None):
 def main():
     p=argparse.ArgumentParser(description='GitAppho v7 — five intentions, guarded Git workflows')
     g=p.add_mutually_exclusive_group()
-    p.add_argument('--version',action='version',version='GitAppho 7.0.0')
+    p.add_argument('--version',action='version',version='GitAppho 7.0.1')
     p.add_argument('--graph-check',action='store_true')
     for x in ('login','accounts','projects','status','doctor','register','publish','connect','advanced'): g.add_argument('--'+x,action='store_true')
     g.add_argument('--account',metavar='USERNAME')
