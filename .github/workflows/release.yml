@@ -161,7 +161,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && sha256sum -c SHA256SUMS.txt)
-          package="dist/gitsit-${GITHUB_REF_NAME#v}.tgz"
+          package="./dist/gitsit-${GITHUB_REF_NAME#v}.tgz"
           test -f "$package"
           npm publish "$package" --access public --tag beta --ignore-scripts
 
