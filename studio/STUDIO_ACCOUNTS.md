@@ -1,0 +1,7 @@
+# Studio Accounts & Organisations
+
+Studio-only adapter for the pinned v7.0.1 core and Native worker. Adds a discoverable Accounts & Organisations action. GitHub CLI continues to manage credentials. Account rebinding verifies the account, destination and push permission with the original core, then requires explicit approval. Organization-owned github.com repositories use the same identity model. Existing SSH remotes, Enterprise Server, organization repository creation and automatic SSO approval are not implemented.
+
+Save and upload in an existing connected repo now commits locally before network checks, avoiding duplicate preflight requests and preserving local commits if network or permission checks fail. Original publication guards and final remote revalidation still apply. No cache of credentials or automatic network retry. Existing direct CLI commands are unchanged.
+
+Browser login is deliberately handled in a second terminal (gh auth login --hostname github.com --web --git-protocol https); Studio stays open. No authentication tokens are entered into Studio. Account enumeration uses gh auth status --json hosts --no-refresh; unsupported CLI versions fall back to manually entering a saved username. Error categories are conservative heuristics based on captured stderr; raw API errors are not displayed. The account state graph is a conceptual coverage model, not a new exhaustive runtime FSM. No empirical probabilities have been measured.

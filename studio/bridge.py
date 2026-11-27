@@ -9,6 +9,8 @@ def load_core(path):
     spec=importlib.util.spec_from_file_location('gitappho_studio_core',p)
     mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod
     spec.loader.exec_module(mod)
+    from accounts import install
+    install(mod)
     return mod
 
 def safe(s):
