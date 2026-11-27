@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitAppho 5.0: intent-driven, guarded Git workflows."""
+"""GitAppho 6.0: intent-driven, guarded Git workflows."""
 import argparse
 import json
 import os
@@ -333,7 +333,7 @@ def push(root):
         fetch_branch(gh,env,url,b,old)
         if not ancestor(old,h):
             print('Local-only / remote-only commits:',out('rev-list','--left-right','--count',h+'...'+old))
-            stop('GitHub has changes you lack. Compare with GitHub (option 9); merge shared history or rebase only private commits. No force push.')
+            stop('GitHub has changes you lack. Get the latest work (gitappho update); merge shared history or rebase only private commits. No force push.')
         if old==h: print('Already up to date.'); return
     # Inspect all outgoing commits (including intermediate versions, not just HEAD).
     span=h if not old else old+'..'+h
@@ -437,7 +437,7 @@ def sync(root):
     fetch_branch(gh,env,url,b,sha)
     if not h or not ancestor(h,sha):
         if h: print('Local-only / remote-only commits:',out('rev-list','--left-right','--count',h+'...'+sha))
-        stop('Cannot safely fast-forward. Use Compare with GitHub; merge or rebase only after review.')
+        stop('Cannot safely fast-forward. Use gitappho update to compare and integrate after review.')
     if h==sha: print('Already current.'); return
     git('--no-pager','log','--oneline',h+'..'+sha,capture=False)
     git('--no-pager','diff','--stat',h,sha,capture=False)
@@ -457,10 +457,12 @@ def pick_local(prompt):
     return b
 
 
-def branch_menu(root):
+def branch_menu(root, choice=None):
     advanced_guard(root)
-    print('\n1 Create branch\n2 Switch local branch\n3 Download remote branch\n4 Compare branches\n5 Merge into current branch\n6 Delete merged local branch\n7 Publish current branch\n8 Combine latest GitHub branch into this branch\n0 Back')
-    c=input('Choose: ').strip()
+    if choice is None:
+        print('\n1 Create branch\n2 Switch local branch\n3 Download remote branch\n4 Compare branches\n5 Merge into current branch\n6 Delete merged local branch\n7 Publish current branch\n8 Combine latest GitHub branch into this branch\n0 Back')
+        c=input('Choose: ').strip()
+    else: c=choice
     if c=='1':
         clean(); base=pick_local('Base branch: '); b=valid_branch(input('New branch name: ').strip())
         confirm('CREATE',f'Create and switch to {b} from {base}?'); clean(); git('switch','--no-track','-c',b,'refs/heads/'+base,capture=False)
@@ -483,7 +485,7 @@ def branch_menu(root):
         confirm('MERGE',f'Merge {b} INTO {target}, locally only?'); clean()
         if head()!=h or branch()!=target: stop('Branch changed.')
         checkpoint('before-merge')
-        r=advanced_git('merge','--no-ff','--no-commit',sha,capture=False,check=False)
+        r=advanced_git('merge','--no-ff','--no-commit','--no-overwrite-ignore',sha,capture=False,check=False)
         if r.returncode: stop('Merge paused. Reopen GitAppho for guided conflict resolution. No push.')
         tree=review_index(); confirm('COMMIT','Finalize reviewed merge locally?')
         if out('write-tree')!=tree or head()!=h: stop('Merge changed.')
@@ -537,7 +539,7 @@ def recovery():
 
 
 def status(root,exists):
-    print(f'\nGitAppho v5 | {root}')
+    print(f'\nGitAppho v6 | {root}')
     if not exists: print('No independent Git repository.'); return
     print('Branch:',out('branch','--show-current') or '(detached)')
     ri=remote_info(); print('Remote:',ri[1] if ri else '(not connected)')
@@ -638,10 +640,12 @@ def stash_entries():
     return [tuple(x.split('\t',2)) for x in out('stash','list','--format=%gd%x09%H%x09%gs').splitlines() if x]
 
 
-def stash_menu(root):
+def stash_menu(root, choice=None):
     advanced_guard(root)
-    print('1 Set tracked unfinished work aside\n2 Restore saved work (keep backup)\n3 Restore saved work and remove stash on success\n4 List saved work\n0 Back')
-    c=input('Choose: ').strip()
+    if choice is None:
+        print('1 Set tracked unfinished work aside\n2 Restore saved work (keep backup)\n3 Restore saved work and remove stash on success\n4 List saved work\n0 Back')
+        c=input('Choose: ').strip()
+    else: c=choice
     if c=='1':
         if not head() or not out('status','--porcelain','--untracked-files=no'): stop('No tracked work to stash.')
         git('status','--short',capture=False)
@@ -709,11 +713,13 @@ def unpublished(root, base, h):
     return commits
 
 
-def rewrite_menu(root):
+def rewrite_menu(root, choice=None):
     advanced_guard(root); clean(); h=head(); b=branch()
     if not h: stop('No commit yet.')
-    print('1 Replay my private feature on another local branch (rebase)\n2 Undo last unpublished commit, keep changes staged\n3 Correct last unpublished commit message\n4 Combine recent unpublished commits (squash)\n0 Back')
-    c=input('Choose: ').strip()
+    if choice is None:
+        print('1 Replay my private feature on another local branch (rebase)\n2 Undo last unpublished commit, keep changes staged\n3 Correct last unpublished commit message\n4 Combine recent unpublished commits (squash)\n0 Back')
+        c=input('Choose: ').strip()
+    else: c=choice
     if c not in ('1','2','3','4'): return
     if c=='1':
         name=pick_local('New base branch: ')
@@ -751,10 +757,12 @@ def rewrite_menu(root):
         print('Commits combined locally. Recovery ref preserves original history.')
 
 
-def specific_changes(root):
+def specific_changes(root, choice=None):
     advanced_guard(root)
-    print('1 Bring a specific commit into current branch\n2 Revert a specific ordinary commit\n3 Restore an accidentally deleted tracked file from HEAD\n4 Stop tracking a file, keep local copy\n5 Show who changed a file (blame)\n0 Back')
-    c=input('Choose: ').strip()
+    if choice is None:
+        print('1 Bring a specific commit into current branch\n2 Revert a specific ordinary commit\n3 Restore an accidentally deleted tracked file from HEAD\n4 Stop tracking a file, keep local copy\n5 Show who changed a file (blame)\n0 Back')
+        c=input('Choose: ').strip()
+    else: c=choice
     if c in ('1','2'):
         clean(); h=head(); b=branch(); sha=choose_commit()
         if len(out('rev-list','--parents','-n','1',sha).split())!=2: stop('Root/merge commits require manual handling.')
@@ -865,7 +873,7 @@ def merge_remote(root):
     advanced_guard(root); clean()
     if head()!=h or branch()!=b or remote_refs(gh,env,url).get(source)!=sha: stop('History changed.')
     checkpoint('before-remote-merge')
-    result=advanced_git('merge','--no-ff','--no-commit',sha,capture=False,check=False)
+    result=advanced_git('merge','--no-ff','--no-commit','--no-overwrite-ignore',sha,capture=False,check=False)
     if result.returncode and not ongoing(): stop('Merge failed; review Git status.')
     print('Review merge in GitAppho recovery; choose Continue after resolving any conflicts.')
 
@@ -887,13 +895,279 @@ def advanced_menu(root):
 
 
 
+# Intent-driven front end. The v5 guarded operations remain available underneath.
+def menu(title, choices, *, recommended=None):
+    """Return a choice key, or None. Native arrows on POSIX TTY; numbered fallback."""
+    print('\n'+title)
+    if sys.stdin.isatty() and sys.stdout.isatty() and os.name=='posix' and os.environ.get('TERM') not in (None,'','dumb') and not os.environ.get('GITAPPHO_PLAIN'):
+        import termios, tty, select
+        fd=sys.stdin.fileno(); old=termios.tcgetattr(fd)
+        index=next((i for i,(k,_) in enumerate(choices) if k==recommended),0)
+        rows=choices+[(None,'Back / exit')]
+        width=max(20,shutil.get_terminal_size((80,24)).columns-2)
+        def draw():
+            for i,(_,label) in enumerate(rows):
+                line=('> ' if i==index else '  ')+f'{i+1 if i<len(choices) else 0}. '+label
+                print('\x1b[2K'+('\x1b[1;32m' if i==index and not os.environ.get('NO_COLOR') else '')+line[:width]+'\x1b[0m')
+            print('\x1b[2KUp/Down  Enter  0/Esc: back',flush=True)
+        try:
+            tty.setcbreak(fd); draw()
+            while True:
+                key=os.read(fd,1)
+                if not key or key in (b'0',b'\x04'): return None
+                if key in (b'\n',b'\r'): return rows[index][0]
+                if key==b'\x1b':
+                    seq=b''
+                    while len(seq)<2 and select.select([fd],[],[],0.08)[0]: seq+=os.read(fd,1)
+                    if seq in (b'[A',b'OA'): index=(index-1)%len(rows)
+                    elif seq in (b'[B',b'OB'): index=(index+1)%len(rows)
+                    elif not seq: return None
+                    else: continue
+                elif key.isdigit() and 1<=int(key)<=len(choices): return choices[int(key)-1][0]
+                elif key in (b'j',b'k'): index=(index+(1 if key==b'j' else -1))%len(rows)
+                else: continue
+                print(f'\x1b[{len(rows)+1}A',end=''); draw()
+        finally: termios.tcsetattr(fd,termios.TCSADRAIN,old)
+    for i,(key,label) in enumerate(choices,1): print(f'{i}. {label}'+(' [recommended]' if key==recommended else ''))
+    print('0. Back / exit')
+    answer=input('Choose: ').strip()
+    if answer in ('','0'): return None
+    if answer.isdigit() and 1<=int(answer)<=len(choices): return choices[int(answer)-1][0]
+    stop('Choose a listed option.')
+
+
+def dirty():
+    return bool(out('status','--porcelain','--untracked-files=all'))
+
+
+def show_home(root,exists):
+    print('\nGITAPPHO  /  6.0.0\nKnow what you want. Not what to type.\n'+'-'*48)
+    print('Project:',repr(root.name))
+    if not exists: print('Not yet a Git project. No changes made.'); return
+    b=out('branch','--show-current') or '(detached)'
+    print('Branch:',repr(b))
+    print('Work:', 'Unsaved changes' if dirty() else 'Working tree clean')
+    print('Saved work:',len(stash_entries()))
+    ri=remote_info(); row=load().get(str(root),{})
+    if ri: print('GitHub:',ri[1], '| Account:', row.get('account') if row.get('remote')==ri[0] else 'not registered')
+    else: print('Local only | no GitHub origin')
+    print('Remote freshness: checked only when a network action is selected.')
+    states=ongoing()
+    if states: print('Needs attention:',', '.join(states))
+
+
+def ensure_registered(root):
+    ri=remote_info()
+    if not ri: stop('Connect or publish this project first (gitappho save).')
+    row=load().get(str(root),{})
+    if row.get('remote')!=ri[0]:
+        print('Existing GitHub repository detected. Register once before network operations.')
+        user=input('GitHub username (Enter = active): ').strip()
+        register(root,*ri,user or None)
+
+
+def intent_save(root,exists):
+    if not exists or not remote_info():
+        options=[('publish','Publish to a new GitHub repository'),('connect','Connect to an existing GitHub repository')]
+        if exists: options.insert(0,('local','Save my changes locally'))
+        c=menu('Where should your work go?',options,recommended='local' if exists else 'publish')
+        if c=='publish': publish(root,exists)
+        elif c=='connect': connect(root,exists)
+        elif c=='local': stage_commit()
+        return
+    c=menu('Save my work',[('publish','Save and upload to GitHub'),('local','Save on this computer only')],recommended='publish')
+    if c=='local': stage_commit(); return
+    if c=='publish':
+        ensure_registered(root); approved(root)
+        stage_commit(); push(root)
+
+
+def remote_snapshot(root):
+    ensure_registered(root)
+    url,slug,login,env,gh,d=approved(root); b=branch(); h=head()
+    if not h: stop('Save an initial commit first.')
+    sha=remote_refs(gh,env,url).get(b)
+    if sha: fetch_branch(gh,env,url,b,sha)
+    return url,slug,login,env,gh,d,b,h,sha
+
+
+def snapshot_check(root,snap):
+    url,slug,login,env,gh,d,b,h,sha=snap
+    advanced_guard(root)
+    if head()!=h or branch()!=b or remote_info()!=(url,slug): stop('Project changed; retry.')
+    if str(verify_repo(slug,env,gh)['id'])!=str(d['id']) or remote_refs(gh,env,url).get(b)!=sha: stop('GitHub changed during review; retry.')
+
+
+def compare_snapshot(snap):
+    h,sha=snap[-2:]
+    if not sha: print('This branch has not been published.'); return
+    print('Local-only / GitHub-only commits:',out('rev-list','--left-right','--count',h+'...'+sha))
+    git('--no-pager','log','--left-right','--oneline','--max-count=30',h+'...'+sha,capture=False)
+    git('--no-pager','diff','--stat',h,sha,capture=False)
+
+
+def intent_update(root):
+    advanced_guard(root); snap=remote_snapshot(root); b,h,sha=snap[-3:]
+    if not sha: print('No GitHub version of this branch yet. Use Save to publish it.'); return
+    if h==sha: print('Your branch is already up to date. Unfinished work is untouched.'); return
+    if ancestor(sha,h): print('Your local branch already contains GitHub work and has newer commits. Use Save to upload.'); return
+    compare_snapshot(snap)
+    if not ancestor(h,sha):
+        if git('merge-base',h,sha,check=False).returncode: stop('Unrelated histories; no automatic integration.')
+        print('Both versions have new commits. Combining preserves shared history.')
+        c=menu('How should we bring the two versions together?', [('merge','Combine both histories locally'),('inspect','Only inspect the differences'),('private','Replay private commits onto latest GitHub (advanced)')],recommended='merge')
+        if c=='inspect' or c is None: return
+        if dirty(): stop('Save or set aside unfinished work first (gitappho save / gitappho new).')
+        if c=='private':
+            bases=out('merge-base','--all',h,sha).splitlines()
+            if len(bases)!=1: stop('Ambiguous history.')
+            commits=unpublished(root,bases[0],h)
+            confirm('REWRITE','Replay only these private commits onto the reviewed GitHub tip? No push.')
+            snapshot_check(root,snap); clean()
+            if unpublished(root,bases[0],h)!=commits: stop('History changed.')
+            checkpoint('before-update-rebase')
+            result=advanced_git('rebase','--no-autostash','--no-update-refs','--no-fork-point','--no-rebase-merges','--no-autosquash','--reapply-cherry-picks','--empty=ask',sha,capture=False,check=False)
+            if result.returncode and not ongoing(): stop('Rebase failed; inspect status.')
+            print('Rebase paused. Run gitappho fix.' if ongoing() else 'Updated locally. Nothing uploaded.'); return
+        confirm('MERGE',f'Combine reviewed GitHub {b} into this local branch? No upload.')
+        snapshot_check(root,snap); clean(); checkpoint('before-update-merge')
+        result=advanced_git('merge','--no-ff','--no-commit','--no-overwrite-ignore',sha,capture=False,check=False)
+        if result.returncode and not ongoing(): stop('Merge failed; inspect status.')
+        print('Merge ready for review or conflict resolution. Run gitappho fix.'); return
+    # Fast-forward only. Preserve a tracked-only stash when restoring after update.
+    if dirty():
+        if paths('ls-files','--others','--exclude-standard','-z'):
+            stop('Untracked files present. Save selected files or move them safely first; no automatic stash.')
+        c=menu('GitHub is newer, but you have unfinished edits.', [('stash','Temporarily save tracked edits, update, restore them'),('inspect','Leave my files untouched')],recommended='stash')
+        if c!='stash': return
+        confirm('UPDATE','Save tracked edits in a local stash, fast-forward, then restore them? The stash stays as a backup.')
+        snapshot_check(root,snap)
+        if paths('ls-files','--others','--exclude-standard','-z'): stop('New files appeared; retry.')
+        before=out('rev-parse','--verify','refs/stash') if stash_entries() else None
+        advanced_git('stash','push','-m','GitAppho: before update',capture=False)
+        saved=stash_entries()
+        if not saved or saved[0][1]==before: stop('No new stash created. Inspect status.')
+        stash_sha=saved[0][1]; clean()
+        checkpoint('before-update'); snapshot_check(root,snap); clean()
+        advanced_git('merge','--ff-only','--no-overwrite-ignore',sha,capture=False)
+        r=advanced_git('stash','apply','--index',stash_sha,capture=False,check=False)
+        if r.returncode: print('Update completed; restoring edits paused or failed. Backup retained. Run gitappho fix.'); return
+        print('Updated and restored your work. Original stash retained as a backup.'); return
+    confirm('UPDATE','Fast-forward to the reviewed GitHub version? Nothing uploaded.')
+    snapshot_check(root,snap); clean(); checkpoint('before-update'); advanced_git('merge','--ff-only','--no-overwrite-ignore',sha,capture=False)
+    print('Updated locally. Nothing uploaded.')
+
+
+def intent_new(root,name=None):
+    advanced_guard(root)
+    c='create' if name else menu('Work on something new',[('create','Create a separate workspace (branch)'),('switch','Return to an existing branch'),('stash','Set unfinished work aside'),('restore','Bring unfinished work back'),('remote','Download an existing GitHub branch')],recommended='create')
+    if c=='create':
+        b=branch(); h=head()
+        if not h: stop('Save an initial commit first.')
+        carry=dirty()
+        if carry:
+            c=menu('You have unfinished edits.', [('carry','Carry these edits into my new branch'),('cancel','Leave everything as it is')],recommended='carry')
+            if c!='carry': return
+        name=valid_branch(name or input('Name your new work: ').strip())
+        confirm('CREATE',f'Create and switch to {name} from {b}? '+('Unfinished edits will stay in your working tree.' if carry else 'Existing branch remains unchanged.'))
+        advanced_guard(root)
+        if not carry: clean()
+        if head()!=h or branch()!=b: stop('Branch changed.')
+        git('switch','--no-track','--no-overwrite-ignore','-c',name,h,capture=False)
+    elif c=='switch': branch_menu(root,choice='2')
+    elif c=='stash': stash_menu(root,choice='1')
+    elif c=='restore': stash_menu(root,choice='2')
+    elif c=='remote': ensure_registered(root); branch_menu(root,choice='3')
+
+
+def intent_combine(root):
+    advanced_guard(root)
+    c=menu('Combine my work',[('merge','Bring another local branch into this one'),('update','Bring in latest GitHub changes'),('pr','Collaborate through a pull request'),('rebase','Move my private work onto another branch'),('pick','Bring over a specific change'),('compare','Compare two branches')],recommended='merge')
+    if c=='merge': branch_menu(root,choice='5')
+    elif c=='update': intent_update(root)
+    elif c=='pr': ensure_registered(root); pr_menu(root)
+    elif c=='rebase':
+        if remote_info(): ensure_registered(root)
+        rewrite_menu(root,choice='1')
+    elif c=='pick': specific_changes(root,choice='1')
+    elif c=='compare': branch_menu(root,choice='4')
+
+
+def intent_fix(root):
+    advanced_guard(root,allow_operation=True)
+    if ongoing(): conflict_menu(root); return
+    c=menu('What needs fixing?', [('undo','Undo or correct a commit'),('restore','Recover a deleted file'),('rescue','Find lost work / recovery points'),('bug','Find when a bug started'),('privacy','Stop tracking a file / scan for secrets'),('account','Check or change GitHub connection'),('tools','All advanced tools')],recommended='undo')
+    if c=='undo':
+        action=menu('Undo or correct a commit',[('revert','Reverse a commit without rewriting history'),('soft','Undo last private commit, keep code'),('amend','Correct last private commit message'),('squash','Combine recent private commits')],recommended='revert')
+        if action=='revert': specific_changes(root,choice='2')
+        elif action:
+            if remote_info(): ensure_registered(root)
+            rewrite_menu(root,choice={'soft':'2','amend':'3','squash':'4'}[action])
+    elif c=='restore': specific_changes(root,choice='3')
+    elif c=='rescue': checkpoints_menu(root)
+    elif c=='bug': bisect_menu(root)
+    elif c=='privacy':
+        action=menu('Privacy tools',[('untrack','Stop tracking an ignored file (keep local copy)'),('scan','Scan current history for secrets')])
+        if action=='untrack': specific_changes(root,choice='4')
+        elif action=='scan':
+            h=head()
+            if not h: stop('No commit yet.')
+            scan_history(h)
+    elif c=='account':
+        ri=remote_info()
+        if not ri: print('No GitHub origin. Use Save to connect.'); return
+        action=menu('GitHub connection',[('verify','Verify registered account and repository'),('register','Register / change account'),('compare','Compare local and GitHub history'),('login','Sign in to GitHub')])
+        if action=='verify': ensure_registered(root); approved(root); print('GitHub connection verified.')
+        elif action=='register': register(root,*ri,input('GitHub username (Enter = active): ').strip() or None)
+        elif action=='compare': compare_snapshot(remote_snapshot(root))
+        elif action=='login': login_action()
+    elif c=='tools': advanced_menu(root)
+
+
+INTENTS={'save':'save','save my work':'save','update':'update','get the latest work':'update','get latest work':'update','new':'new','work on something new':'new','combine':'combine','combine my work':'combine','fix':'fix','fix a problem':'fix','undo my last commit but keep my code':'undo-private','set my work aside':'stash','bring back my unfinished work':'restore-stash'}
+
+
+def parse_intent(words):
+    if not words: return None,None
+    phrase=' '.join(words).strip(); key=phrase.casefold()
+    if key in INTENTS: return INTENTS[key],None
+    if len(words)==2 and words[0].casefold()=='new': return 'new',words[1]
+    stop('Unrecognized intention. Use save, update, new [branch-name], combine, fix, or run gitappho for the menu.')
+
+
+def dispatch_intent(root,exists,action=None,name=None):
+    show_home(root,exists)
+    if exists and ongoing():
+        print('Finish the interrupted operation before starting anything else.')
+        if action not in (None,'fix'): print('Requested action deferred.')
+        conflict_menu(root); return
+    if not exists:
+        if action not in (None,'save'): stop('This folder is not a Git project. Use gitappho save to set it up.')
+        intent_save(root,False); return
+    if action is None:
+        action=menu('What do you want to do?', [('save','Save my work'),('update','Get the latest work'),('new','Work on something new'),('combine','Combine my work'),('fix','Fix a problem')],recommended='save' if dirty() else 'update' if remote_info() else 'new')
+    if action=='save': intent_save(root,True)
+    elif action=='update': intent_update(root)
+    elif action=='new': intent_new(root,name)
+    elif action=='combine': intent_combine(root)
+    elif action=='fix': intent_fix(root)
+    elif action=='undo-private':
+        if remote_info(): ensure_registered(root)
+        rewrite_menu(root,choice='2')
+    elif action=='stash': stash_menu(root,choice='1')
+    elif action=='restore-stash': stash_menu(root,choice='2')
+    if action: print('\nSession finished. Review the result above; run gitappho again for another action.')
+
+
 def main():
-    p=argparse.ArgumentParser(description='GitAppho v5 — one menu, guarded Git workflows')
+    p=argparse.ArgumentParser(description='GitAppho v6 — five intentions, guarded Git workflows')
     g=p.add_mutually_exclusive_group()
-    p.add_argument('--version',action='version',version='GitAppho 5.0.0')
+    p.add_argument('--version',action='version',version='GitAppho 6.0.0')
     for x in ('login','accounts','projects','status','doctor','register','publish','connect','advanced'): g.add_argument('--'+x,action='store_true')
     g.add_argument('--account',metavar='USERNAME')
+    p.add_argument('intent',nargs='*',help='save | update | new [name] | combine | fix')
     a=p.parse_args()
+    if a.intent and (a.account or any(getattr(a,x) for x in ('login','accounts','projects','status','doctor','register','publish','connect','advanced'))): p.error('Use either an intention or a legacy option, not both.')
     if a.login: login_action(); return
     if a.accounts: run([gh_path(),'auth','status','--hostname','github.com'],env=gh_env(),capture=False,check=False); return
     if a.projects:
@@ -914,51 +1188,8 @@ def main():
     if a.register or a.account:
         if not exists or not remote_info(): stop('No connected independent repo. Use --publish or --connect.')
         register(root,*remote_info(),a.account); return
-    while True:
-        if boundary()[0]!=root: stop('Project changed.')
-        exists=(root/'.git').is_dir(); status(root,exists)
-        if exists and ongoing():
-            print('1 Resolve conflicts / resume or cancel operation\n0 Exit'); c=input('Choose: ').strip()
-            if c=='1': conflict_menu(root)
-            return
-        if not exists or not remote_info():
-            print('1 Publish new project to GitHub\n2 Connect existing GitHub repository\n3 Sign in to GitHub\n4 Local advanced tools (requires local repo)\n0 Exit')
-            c=input('Choose: ').strip()
-            if c=='1': publish(root,exists); return
-            elif c=='2': connect(root,exists)
-            elif c=='3': login_action()
-            elif c=='4' and exists: advanced_menu(root)
-            else: return
-        else:
-            row=load().get(str(root)); ri=remote_info()
-            if not row or row.get('remote')!=ri[0]:
-                print('1 Register this project\n2 Sign in to GitHub\n0 Exit'); c=input('Choose: ').strip()
-                if c=='1':
-                    user=input('GitHub username (Enter = active): ').strip(); register(root,*ri,user or None)
-                elif c=='2': login_action()
-                else: return
-            else:
-                print('1 Save and publish my changes\n2 Push existing commits\n3 Get latest changes (fast-forward only)\n4 Manage branches\n5 Pull requests\n6 Change account\n7 Recover / revert\n8 Save local commit only\n9 Compare with GitHub\n10 Advanced Git & recovery tools\n0 Exit')
-                c=input('Choose: ').strip()
-                if c=='1': approved(root); stage_commit(); push(root); return
-                elif c=='2': push(root); return
-                elif c=='3': sync(root)
-                elif c=='4': branch_menu(root)
-                elif c=='5': pr_menu(root)
-                elif c=='6':
-                    user=input('GitHub username (Enter = active): ').strip(); register(root,*ri,user or None)
-                elif c=='7': recovery()
-                elif c=='8': stage_commit()
-                elif c=='9':
-                    url,slug,login,env,gh,d=approved(root); b=branch(); h=head(); sha=remote_refs(gh,env,url).get(b)
-                    if not sha: print('Current branch has not been published.')
-                    elif not h: print('No local commit yet.')
-                    else:
-                        fetch_branch(gh,env,url,b,sha)
-                        print('Local-only / remote-only commits:',out('rev-list','--left-right','--count',h+'...'+sha))
-                        git('--no-pager','log','--left-right','--oneline','--max-count=30',h+'...'+sha,capture=False)
-                elif c=='10': advanced_menu(root)
-                else: return
+    action,name=parse_intent(a.intent)
+    dispatch_intent(root,exists,action,name)
 
 def cli():
     try: main()

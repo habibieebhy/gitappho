@@ -1,18 +1,36 @@
-# GitAppho v5 — Git without the complexity
+# GitAppho v6 — Git without the complexity
 
 One terminal command opens a contextual menu for Git and GitHub. Use intent, not memorized Git commands.
 
 ## Upgrade on macOS
 
-Requires Python 3.9+, Git 2.38+ (for rebase safeguards), GitHub CLI for remote operations and Gitleaks 8.x with the modern `git` subcommand for outgoing commit scans. Install dependencies with `brew install gh gitleaks` if missing. Run `python3 ~/Downloads/install_gitappho_v5.py` on the existing `~/GitAppho` project; then `source ~/.zshrc` and `gitappho --doctor`. Restart existing IDE terminals. The installer preserves the project registry and creates backups under `~/.config/gitappho/`. It writes source and installed application files, but does not run Git, publish anything, or modify GitHub credentials. Existing VS Code user keybindings are not changed. Use the existing Control+Option+Shift+G keybinding only at an idle integrated terminal prompt in the exact project root. Disable conflicting Apple Shortcuts keystroke injection.
+Requires Python 3.9+, Git 2.38+ (for rebase safeguards), GitHub CLI for remote operations and Gitleaks 8.x with the modern `git` subcommand for outgoing commit scans. Install dependencies with `brew install gh gitleaks` if missing. Run `python3 ~/Downloads/install_gitappho_v6.py` on the existing `~/GitAppho` project; then `source ~/.zshrc` and `gitappho --doctor`. Restart existing IDE terminals. The installer preserves the project registry and creates backups under `~/.config/gitappho/`. It writes source and installed application files, but does not run Git, publish anything, or modify GitHub credentials. Existing VS Code user keybindings are not changed. Use the existing Control+Option+Shift+G keybinding only at an idle integrated terminal prompt in the exact project root. Disable conflicting Apple Shortcuts keystroke injection.
 
 ## Everyday operations
 
 `gitappho` adapts to whether the directory has an independent Git repository, a verified remote, a registered account, or an interrupted Git operation. New projects can be published with separate selection, commit and push confirmations; private is the default. Existing projects are never silently initialized or overwritten. Connect to an empty remote or a compatible existing history; clone unrelated remote content into a separate new folder. All network operations use an approved HTTPS GitHub remote and account and validate the repository identity. `--login`, `--accounts`, `--projects`, `--register`, `--account USERNAME`, `--publish`, `--connect`, `--status`, `--doctor`, `--version`, and `--advanced` are available. Accounts are selected per project; commit author identity is separate.
 
-Normal menu: save and publish, push existing commits, fast-forward updates, branch management, pull requests, change account, recover/revert, local commit, compare with GitHub, advanced Git & recovery tools. Save/publish and push exit after success; clean projects no longer ask to stage. Branch management includes local and reviewed remote merges, local branch creation/switching/comparison/deletion and remote branch download/publication.
+## Five intentions
 
-## Advanced tools (main menu 10 or `gitappho --advanced`)
+```sh
+gitappho save
+gitappho update
+gitappho new checkout-page
+gitappho combine
+gitappho fix
+```
+
+Run `gitappho` to see the five-action menu. On POSIX interactive terminals use Up/Down, Enter, or Esc; numbers also work. Set `GITAPPHO_PLAIN=1` to use numbered input. Legacy advanced submenus remain numbered. Exact supported phrases include `gitappho "save my work"`, `gitappho "undo my last commit but keep my code"`, and `gitappho "set my work aside"`. No AI or external language service; unknown phrases are rejected.
+
+- Save: local commit or reviewed upload, and initial publish/connect for new projects. Existing unregistered projects can save locally without authentication; network actions request registration first.
+- Update: compare verified remote branch with local commits. Already-current/ahead branches leave files alone. A clean behind-only branch can fast-forward after approval. Tracked-only dirty work can be stashed, fast-forwarded and applied with index restoration; the original stash remains even on success. Untracked files stop this automatic workflow. Ignored files that would be overwritten by fast-forward block the merge. Diverged histories require explicit reviewed merge or guarded private-only rebase; dirty diverged branches must save or set aside work first.
+- New: create a branch from current HEAD, explicitly carry unfinished changes, switch, download a verified remote branch or manage saved work.
+- Combine: local merge, remote update, pull requests, guarded rebase, cherry-pick or branch comparison.
+- Fix: automatically route interrupted operations to recovery, or select undo, restore, rescue, bisect, privacy or connection tools. All original v5 advanced commands remain via `--advanced` or Fix > All advanced tools.
+
+Remote freshness is not inferred from local tracking refs. Authentication and publishing use existing v5 safeguards. Actions finish after one workflow rather than returning to the main menu. Exact project root required.
+
+## Advanced tools (`gitappho --advanced`)
 
 1. Stash tracked staged and unstaged changes. Untracked/ignored files remain. Restore using apply or pop-like apply-then-drop, with original stash retained on failure and a recovery reference on successful drop. Restore requires a clean working tree.
 2. Rebase private feature commits onto another local branch, soft undo the last commit, correct the last message, squash 2–20 recent commits. Protected main/master, merge-containing ranges, tagged and currently visible remote-reachable commits are blocked. Existing local tracking refs are checked as well. No force push. Only rewrite work nobody else depends on; remote verification cannot establish whether commits were ever copied or shared elsewhere. Create a local checkpoint before rewriting.

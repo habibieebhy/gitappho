@@ -170,4 +170,78 @@ class Tests(unittest.TestCase):
         with patch('builtins.input',side_effect=['y',h,'rescue/test','RESCUE']): ga.checkpoints_menu(self.project)
         self.assertEqual(self.git('rev-parse','rescue/test'),h); self.assertEqual(ga.branch(),'main')
 
+    def test_intent_parser(self):
+        self.assertEqual(ga.parse_intent(['save']),('save',None))
+        self.assertEqual(ga.parse_intent(['new','feature/test']),('new','feature/test'))
+        self.assertEqual(ga.parse_intent(['undo my last commit but keep my code']),('undo-private',None))
+        with self.assertRaises(SystemExit): ga.parse_intent(['delete everything'])
+    def test_intent_main_menu_five(self):
+        with patch.object(ga,'menu',return_value=None) as m: ga.dispatch_intent(self.project,True)
+        self.assertEqual([x[0] for x in m.call_args.args[1]],['save','update','new','combine','fix'])
+    def test_intent_local_save(self):
+        (self.project/'app.py').write_text('new local change\n')
+        with patch('builtins.input',side_effect=['1','STAGE','n','saved locally','COMMIT']): ga.dispatch_intent(self.project,True,'save')
+        self.assertEqual(self.git('log','-1','--format=%s'),'saved locally')
+    def test_intent_new_branch_clean(self):
+        with patch('builtins.input',return_value='CREATE'): ga.dispatch_intent(self.project,True,'new','feature/test')
+        self.assertEqual(ga.branch(),'feature/test')
+    def test_intent_new_branch_dirty_carry(self):
+        (self.project/'app.py').write_text('unfinished\n'); (self.project/'new.txt').write_text('new\n'); h=ga.head()
+        with patch('builtins.input',side_effect=['1','CREATE']): ga.dispatch_intent(self.project,True,'new','feature/test')
+        self.assertEqual(ga.branch(),'feature/test'); self.assertEqual(ga.head(),h); self.assertEqual((self.project/'app.py').read_text(),'unfinished\n'); self.assertTrue((self.project/'new.txt').exists())
+    def test_intent_conflict_routing(self):
+        self.divergent()
+        with patch('builtins.input',side_effect=['5','main','MERGE']),self.assertRaises(SystemExit): ga.branch_menu(self.project)
+        with patch.object(ga,'conflict_menu') as m, patch.object(ga,'intent_save') as save: ga.dispatch_intent(self.project,True,'save')
+        m.assert_called_once_with(self.project); save.assert_not_called()
+    def test_intent_unknown_no_mutation(self):
+        h=ga.head()
+        with self.assertRaises(SystemExit): ga.parse_intent(['reset','hard'])
+        self.assertEqual(ga.head(),h)
+    def test_intent_unregistered_local(self):
+        self.git('remote','add','origin','https://github.com/user/repo.git')
+        (self.project/'app.py').write_text('local only\n')
+        with patch('builtins.input',side_effect=['2','STAGE','n','local','COMMIT']),patch.object(ga,'identity',side_effect=AssertionError('No network for local save')): ga.dispatch_intent(self.project,True,'save')
+        self.assertEqual(self.git('log','-1','--format=%s'),'local')
+    def remote_fixture(self, conflict=False, diverge=False):
+        h=ga.head(); self.git('switch','-c','remote-work')
+        p=self.project/('app.py' if conflict else 'remote.txt'); p.write_text('remote change\n'); self.git('add','--',p.name); self.git('commit','-m','remote change'); sha=ga.head()
+        self.git('switch','main')
+        if diverge:
+            (self.project/'local.txt').write_text('local commit\n'); self.git('add','local.txt'); self.git('commit','-m','local commit'); h=ga.head()
+        url='https://github.com/user/repo.git'; self.git('remote','add','origin',url)
+        return (url,'user/repo','user',{},'/usr/bin/false',{'id':42},'main',h,sha)
+    def test_intent_update_clean(self):
+        snap=self.remote_fixture()
+        with patch.object(ga,'remote_snapshot',return_value=snap),patch.object(ga,'snapshot_check'),patch('builtins.input',return_value='UPDATE'): ga.intent_update(self.project)
+        self.assertEqual(ga.head(),snap[-1]); self.assertTrue((self.project/'remote.txt').exists())
+    def test_intent_update_dirty_restore(self):
+        snap=self.remote_fixture(); (self.project/'app.py').write_text('unfinished\n'); self.git('add','app.py'); (self.project/'app.py').write_text('more unfinished\n')
+        with patch.object(ga,'remote_snapshot',return_value=snap),patch.object(ga,'snapshot_check'),patch('builtins.input',side_effect=['1','UPDATE']): ga.intent_update(self.project)
+        self.assertEqual(ga.head(),snap[-1]); self.assertEqual((self.project/'app.py').read_text(),'more unfinished\n'); self.assertEqual(self.git('show',':app.py'),'unfinished'); self.assertEqual(len(ga.stash_entries()),1)
+    def test_intent_update_conflict_keeps_stash(self):
+        snap=self.remote_fixture(conflict=True); (self.project/'app.py').write_text('unfinished\n')
+        with patch.object(ga,'remote_snapshot',return_value=snap),patch.object(ga,'snapshot_check'),patch('builtins.input',side_effect=['1','UPDATE']): ga.intent_update(self.project)
+        self.assertEqual(ga.head(),snap[-1]); self.assertEqual(len(ga.stash_entries()),1); self.assertEqual(ga.conflict_paths(),['app.py'])
+    def test_intent_update_untracked_blocked(self):
+        snap=self.remote_fixture(); (self.project/'new.txt').write_text('private\n')
+        with patch.object(ga,'remote_snapshot',return_value=snap),self.assertRaises(SystemExit): ga.intent_update(self.project)
+        self.assertEqual(ga.head(),snap[-2]); self.assertTrue((self.project/'new.txt').exists()); self.assertFalse(ga.stash_entries())
+    def test_intent_update_diverged_merge(self):
+        snap=self.remote_fixture(diverge=True)
+        with patch.object(ga,'remote_snapshot',return_value=snap),patch.object(ga,'snapshot_check'),patch('builtins.input',side_effect=['1','MERGE']): ga.intent_update(self.project)
+        self.assertEqual(ga.head(),snap[-2]); self.assertIn('MERGE_HEAD',ga.ongoing())
+        with patch('builtins.input',side_effect=['3','n','CONTINUE']): ga.conflict_menu(self.project)
+        self.assertTrue(ga.ancestor(snap[-1],ga.head())); self.assertTrue(ga.ancestor(snap[-2],ga.head()))
+    def test_intent_update_ignored_file_protected(self):
+        (self.project/'.gitignore').write_text('remote.txt\n'); self.git('add','.gitignore'); self.git('commit','-m','ignore')
+        h=ga.head(); self.git('switch','-c','remote-work'); (self.project/'remote.txt').write_text('tracked remote\n'); self.git('add','-f','remote.txt'); self.git('commit','-m','remote'); sha=ga.head(); self.git('switch','main'); (self.project/'remote.txt').write_text('private ignored\n')
+        snap=('https://github.com/user/repo.git','user/repo','user',{},'/usr/bin/false',{'id':42},'main',h,sha)
+        with patch.object(ga,'remote_snapshot',return_value=snap),patch.object(ga,'snapshot_check'),patch('builtins.input',return_value='UPDATE'),self.assertRaises(SystemExit): ga.intent_update(self.project)
+        self.assertEqual(ga.head(),h); self.assertEqual((self.project/'remote.txt').read_text(),'private ignored\n')
+    def test_intent_update_snapshot_changed(self):
+        snap=self.remote_fixture()
+        with patch.object(ga,'remote_snapshot',return_value=snap),patch.object(ga,'snapshot_check',side_effect=SystemExit('remote changed')),patch('builtins.input',return_value='UPDATE'),self.assertRaises(SystemExit): ga.intent_update(self.project)
+        self.assertEqual(ga.head(),snap[-2])
+
 if __name__=='__main__': unittest.main()
