@@ -1,0 +1,191 @@
+name: GitSit beta release
+
+on:
+  workflow_dispatch: # Build-only rehearsal; download artifacts from Actions.
+  push:
+    tags: ['v*'] # Publishing requires a matching versioned tag.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitsit-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate release tag and builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f gitsit_release.py
+          expected=$(python -c "import runpy; print(runpy.run_path('gitsit_release.py')['TAG'])")
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "$expected" ]]; then
+            echo "Tag must match builder version: $expected" >&2
+            exit 1
+          fi
+      - name: Install build dependencies
+        run: |
+          command -v git
+          command -v gh
+          command -v gitleaks || brew install gitleaks
+      - name: Compile, scan and smoke-test native packages
+        run: |
+          python gitsit_release.py --build --mit-license \
+            --output "$RUNNER_TEMP/gitsit-build" --repo "$GITHUB_REPOSITORY"
+      - name: Preserve executable permissions in transport archive
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          tar -C "$RUNNER_TEMP/gitsit-build/dist" -czf "$RUNNER_TEMP/$TARGET.tar.gz" "$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: ${{ runner.temp }}/${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  assemble:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: incoming
+          merge-multiple: true
+      - name: Assemble one npm package and two native wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir targets
+          tar -xzf incoming/darwin-arm64.tar.gz -C targets
+          tar -xzf incoming/darwin-x64.tar.gz -C targets
+          python gitsit_release.py --assemble targets/darwin-arm64 targets/darwin-x64 \
+            --output release-dist --repo "$GITHUB_REPOSITORY"
+          (cd release-dist && sha256sum -c SHA256SUMS.txt)
+          python -m pip install twine
+          python -m twine check release-dist/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gitsit-release
+          path: release-dist/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  github-release:
+    needs: assemble
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: github-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitsit-release
+          path: dist
+      - name: Verify checksums and publish prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --prerelease --title "GitSit $GITHUB_REF_NAME" \
+            --notes 'Early macOS beta (Apple Silicon and Intel). Requires Python 3.11+, Git, GitHub CLI and Gitleaks for publication workflows. Windows and Linux are not included.' \
+            dist/*
+
+  npm:
+    needs: [assemble, github-release]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Use OIDC-capable npm CLI
+        run: npm install --global npm@11
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitsit-release
+          path: dist
+      - name: Publish exactly one combined npm beta
+        # Set NPM_TOKEN only for initial bootstrap, then remove it and use OIDC.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          package="dist/gitsit-${GITHUB_REF_NAME#v}.tgz"
+          test -f "$package"
+          npm publish "$package" --access public --tag beta --ignore-scripts
+
+  pypi:
+    needs: [assemble, github-release]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitsit-release
+          path: dist
+      - name: Select only verified macOS wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          mkdir wheels
+          cp dist/*-macosx_*.whl wheels/
+          test "$(find wheels -name '*.whl' | wc -l | tr -d ' ')" = 2
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheels/
